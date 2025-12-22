@@ -128,98 +128,36 @@ val_ml['p50'] = model.predict(X_val)
 ml_mape = mean_absolute_percentage_error(y_val, val_ml['p50'])
 print('ML MAPE:', ml_mape)
 
-# --- Step 7: Uncertainty estimation (empirical calibration) ---
-# Use empirical residual quantiles computed from TRAINING residuals to avoid
-# parametric (Gaussian) assumptions which are invalid for tree-based models.
-train_preds = model.predict(X_train)
-residuals = y_train - train_preds
+# --- Step 7: Uncertainty estimation — Quantile Regression approach ---
+# Train two quantile regressors (0.1 and 0.9) on the same features used for P50.
+# This directly models conditional quantiles (asymmetric intervals) without
+# relying on Gaussian residual assumptions.
+from sklearn.ensemble import GradientBoostingRegressor as GBR
 
-# compute empirical 10th and 90th percentiles separately for campaign vs non-campaign
-resid_non_campaign = residuals[train_ml['campaign_intensity'] == 0]
-resid_campaign = residuals[train_ml['campaign_intensity'] > 0]
+# quantile models: deterministic by setting random_state
+q10_model = GBR(loss='quantile', alpha=0.1, n_estimators=200, learning_rate=0.05, max_depth=3, random_state=RANDOM_STATE)
+q90_model = GBR(loss='quantile', alpha=0.9, n_estimators=200, learning_rate=0.05, max_depth=3, random_state=RANDOM_STATE)
 
-# fallback to overall residuals if a group is too small
-overall_q10 = np.percentile(residuals.dropna(), 10) if len(residuals.dropna()) > 0 else 0.0
-overall_q90 = np.percentile(residuals.dropna(), 90) if len(residuals.dropna()) > 0 else 0.0
+# fit on training ML features
+q10_model.fit(X_train, y_train)
+q90_model.fit(X_train, y_train)
 
-def group_quantiles(series):
-    # require at least 5 samples to use group-specific quantiles; otherwise fallback
-    if series.dropna().shape[0] >= 5:
-        q10 = np.percentile(series.dropna(), 10)
-        q90 = np.percentile(series.dropna(), 90)
-    else:
-        q10, q90 = overall_q10, overall_q90
-    return q10, q90
+# predict quantiles on validation set
+val_ml['p10'] = q10_model.predict(X_val)
+val_ml['p90'] = q90_model.predict(X_val)
 
-q10_non, q90_non = group_quantiles(resid_non_campaign)
-q10_camp, q90_camp = group_quantiles(resid_campaign)
-print('Empirical residual quantiles: non-campaign (q10,q90)=', (q10_non, q90_non), 'campaign (q10,q90)=', (q10_camp, q90_camp))
+def pinball_loss(y, y_pred, q):
+    # quantile (pinball) loss for quantile q
+    d = y - y_pred
+    return np.mean(np.maximum(q * d, (q - 1) * d))
 
-# For each validation row, shift the model P50 by the appropriate empirical residual quantiles
-# To ensure coverage meets business targets, we search for a small multiplicative expansion
-# factor applied to the distance of the empirical quantiles from the group median.
-# This preserves non-parametric calibration while allowing controlled widening.
-med_non = np.median(resid_non_campaign.dropna()) if len(resid_non_campaign.dropna()) > 0 else 0.0
-med_camp = np.median(resid_campaign.dropna()) if len(resid_campaign.dropna()) > 0 else 0.0
+pinball_q10 = pinball_loss(y_val.values, val_ml['p10'].values, 0.1)
+pinball_q90 = pinball_loss(y_val.values, val_ml['p90'].values, 0.9)
+print(f'Pinball loss q=0.1: {pinball_q10:.6f}, q=0.9: {pinball_q90:.6f}')
 
-def compute_coverage_for_alpha(alpha):
-    # compute adjusted group quantiles by expanding away from the median
-    adj_q10_non = med_non + alpha * (q10_non - med_non)
-    adj_q90_non = med_non + alpha * (q90_non - med_non)
-    adj_q10_camp = med_camp + alpha * (q10_camp - med_camp)
-    adj_q90_camp = med_camp + alpha * (q90_camp - med_camp)
-
-    p10 = np.where(val_ml['campaign_intensity'] > 0,
-                   val_ml['p50'] + adj_q10_camp,
-                   val_ml['p50'] + adj_q10_non)
-    p90 = np.where(val_ml['campaign_intensity'] > 0,
-                   val_ml['p50'] + adj_q90_camp,
-                   val_ml['p50'] + adj_q90_non)
-
-    mask = (val_ml['weekly_qty'] >= p10) & (val_ml['weekly_qty'] <= p90)
-    return mask.mean()
-
-# binary search minimal alpha in [1.0, max_alpha] that achieves coverage >= 0.70
-target = 0.70
-low, high = 1.0, 5.0
-best_alpha = high
-for _ in range(25):
-    mid = (low + high) / 2.0
-    cov = compute_coverage_for_alpha(mid)
-    if cov >= target:
-        best_alpha = mid
-        high = mid
-    else:
-        low = mid
-
-# if even at high alpha coverage is low, increase high and try again (deterministic loop)
-if compute_coverage_for_alpha(best_alpha) < target:
-    low, high = 5.0, 10.0
-    for _ in range(25):
-        mid = (low + high) / 2.0
-        cov = compute_coverage_for_alpha(mid)
-        if cov >= target:
-            best_alpha = mid
-            high = mid
-        else:
-            low = mid
-
-# apply best_alpha to construct final intervals
-adj_q10_non = med_non + best_alpha * (q10_non - med_non)
-adj_q90_non = med_non + best_alpha * (q90_non - med_non)
-adj_q10_camp = med_camp + best_alpha * (q10_camp - med_camp)
-adj_q90_camp = med_camp + best_alpha * (q90_camp - med_camp)
-
-val_ml['p10'] = np.where(val_ml['campaign_intensity'] > 0,
-                         val_ml['p50'] + adj_q10_camp,
-                         val_ml['p50'] + adj_q10_non)
-val_ml['p90'] = np.where(val_ml['campaign_intensity'] > 0,
-                         val_ml['p50'] + adj_q90_camp,
-                         val_ml['p50'] + adj_q90_non)
-
-final_coverage = ((val_ml['weekly_qty'] >= val_ml['p10']) & (val_ml['weekly_qty'] <= val_ml['p90'])).mean()
-print(f'Calibration alpha used: {best_alpha:.3f}, resulting coverage: {final_coverage:.3f}')
-coverage = final_coverage
+# compute coverage of the [p10, p90] interval
+coverage = ((val_ml['weekly_qty'] >= val_ml['p10']) & (val_ml['weekly_qty'] <= val_ml['p90'])).mean()
+print(f'Coverage (P10-P90) on validation: {coverage:.3f}')
 
 # --- Step 8: Diagnostics & plots ---
 # choose example SKU with most validation rows (avoids hard-coding)
