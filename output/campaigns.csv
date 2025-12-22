@@ -1,0 +1,3 @@
+campaign_id,start_day,duration_days,uplift,categories
+holiday_sale,10,14,1.25,"electronics,home"
+clearance,30,7,1.1,clothing

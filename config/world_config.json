@@ -1,0 +1,57 @@
+
+{
+	"campaigns": [
+		{
+			"name": "holiday_sale",
+			"start_date_offset": 10,
+			"duration_days": 14,
+			"uplift_multiplier": 1.25,
+			"affected_categories": ["electronics", "home"]
+		},
+		{
+			"name": "clearance",
+			"start_date_offset": 30,
+			"duration_days": 7,
+			"uplift_multiplier": 1.10,
+			"affected_categories": ["clothing"]
+		}
+	],
+	"skus": [
+		{"sku_id": "SKU0001"},
+		{"sku_id": "SKU0002"},
+		{"sku_id": "SKU0003"},
+		{"sku_id": "SKU0004"},
+		{"sku_id": "SKU0005"}
+	]
+,
+	"regions": [
+		{
+			"name": "north",
+			"COD_rate": 0.3,
+			"RTO_rate_for_COD": 0.15,
+			"RTO_rate_for_prepaid": 0.05,
+			"avg_delivery_days": 3
+		},
+		{
+			"name": "south",
+			"COD_rate": 0.25,
+			"RTO_rate_for_COD": 0.12,
+			"RTO_rate_for_prepaid": 0.04,
+			"avg_delivery_days": 4
+		},
+		{
+			"name": "east",
+			"COD_rate": 0.35,
+			"RTO_rate_for_COD": 0.18,
+			"RTO_rate_for_prepaid": 0.06,
+			"avg_delivery_days": 5
+		},
+		{
+			"name": "west",
+			"COD_rate": 0.2,
+			"RTO_rate_for_COD": 0.10,
+			"RTO_rate_for_prepaid": 0.03,
+			"avg_delivery_days": 2
+		}
+	]
+}
