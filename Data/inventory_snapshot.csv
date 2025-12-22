@@ -1,0 +1,25 @@
+warehouse_id,warehouse_type,region,sku_id,available_stock,reserved_stock
+WH-DEL-C,Central,Delhi NCR,TS-BLK-S,313,14
+WH-DEL-C,Central,Delhi NCR,TS-BLK-M,156,17
+WH-DEL-C,Central,Delhi NCR,TS-BLK-L,212,28
+WH-DEL-C,Central,Delhi NCR,TS-WHT-M,185,47
+WH-DEL-C,Central,Delhi NCR,HD-BLK-M,176,43
+WH-DEL-C,Central,Delhi NCR,HD-GRY-L,339,69
+WH-DEL-C,Central,Delhi NCR,JK-DNM-M,172,37
+WH-DEL-C,Central,Delhi NCR,CP-BLK,258,4
+WH-MUM-R,Regional,Mumbai,TS-BLK-S,23,0
+WH-MUM-R,Regional,Mumbai,TS-BLK-M,47,3
+WH-MUM-R,Regional,Mumbai,TS-BLK-L,84,19
+WH-MUM-R,Regional,Mumbai,TS-WHT-M,23,4
+WH-MUM-R,Regional,Mumbai,HD-BLK-M,45,11
+WH-MUM-R,Regional,Mumbai,HD-GRY-L,103,22
+WH-MUM-R,Regional,Mumbai,JK-DNM-M,89,13
+WH-MUM-R,Regional,Mumbai,CP-BLK,48,7
+WH-BLR-R,Regional,Bangalore,TS-BLK-S,95,8
+WH-BLR-R,Regional,Bangalore,TS-BLK-M,20,6
+WH-BLR-R,Regional,Bangalore,TS-BLK-L,40,11
+WH-BLR-R,Regional,Bangalore,TS-WHT-M,74,10
+WH-BLR-R,Regional,Bangalore,HD-BLK-M,55,4
+WH-BLR-R,Regional,Bangalore,HD-GRY-L,47,12
+WH-BLR-R,Regional,Bangalore,JK-DNM-M,63,3
+WH-BLR-R,Regional,Bangalore,CP-BLK,31,6
