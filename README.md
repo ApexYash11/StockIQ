@@ -1,253 +1,329 @@
-\# StockIQ
+# StockIQ
 
-StockIQ is an end-to-end Inventory, Forecasting, and Decision Intelligence system for D2C operations. It generates (or consumes) order + inventory data, produces weekly probabilistic forecasts (P10/P50/P90), routes SKUs to the best available strategy, allocates SKU demand across warehouses (without demand multiplication), and outputs MOQ-aware reorder recommendations plus monitoring artifacts.
+Made by Yash Maheshwari
 
----
+## Executive Summary
 
-## Why this repo exists
-- Demonstrate **probabilistic demand forecasting** (SARIMAX) for weekly SKU demand.
-- Demonstrate **production-style decisioning** (routing, fallbacks, constraints like MOQ).
-- Demonstrate **multi-warehouse allocation** with a minimum risk floor (`MIN_SHARE`) and renormalization.
-- Provide **auditability** via CSV artifacts suitable for monitoring and senior review.
+StockIQ is an end-to-end Inventory, Forecasting, Reorder, and COD Intelligence system for D2C businesses. It turns raw operational data (orders, inventory events, vendors, campaigns) into probabilistic demand forecasts (P10/P50/P90), multi-warehouse inventory decisions, and constraint-aware reorder recommendations.
 
----
+This is more than “just forecasting”: StockIQ converts uncertainty into deterministic, explainable business actions (how much to reorder, where to place inventory, and whether to allow COD based on RTO risk).
 
-## Architecture (render-safe)
+## System Overview
 
-### Mermaid (renders on GitHub; some viewers may hide it)
+At a high level, StockIQ runs an offline pipeline that produces API-ready decision artifacts:
+
+- **Inputs**: orders, inventory events, vendor constraints (lead time, MOQ), optional campaign signals
+- **Transformations**: weekly aggregation, SKU routing, probabilistic forecasting, warehouse allocation, reorder computation, COD risk scoring
+- **Outputs**: reorder recommendations + audit/monitoring CSV artifacts suitable for serving via an API or dashboard
+
+The repo includes:
+
+- Synthetic data generators in `Generate/` that write CSV inputs to `output/`
+- Notebooks in `notebooks/` that implement forecasting, reorder logic, and COD intelligence
+- Generated artifacts in `artifacts/` used for debugging and monitoring
+
+## System Architecture
+
 ```mermaid
 flowchart LR
-  A[output/*.csv inputs] --> B[Weekly aggregation]
-  B --> C[SKU routing]
-  C --> D[Forecasting (SARIMAX / history / naive)]
-  D --> E[P10/P50/P90]
-  E --> F[Warehouse allocation (shares + MIN_SHARE)]
-  F --> G[Reorder engine (MOQ-aware)]
-  G --> H[Decisions + artifacts]
-  A --> I[COD intelligence]
-  I --> H
+    A[Orders / Inventory / Vendors / Campaigns] --> B[Weekly Aggregation]
+    B --> C[SKU Routing]
+    C --> D[Demand Forecasting<br/>(P10 / P50 / P90 via SARIMAX)]
+    D --> E[Warehouse Allocation]
+    E --> F[Reorder Engine]
+    F --> G[COD Intelligence]
+    G --> H[Final Recommendations]
 ```
 
-### ASCII fallback (always visible)
-```
-output/*.csv
-   |
-   v
-weekly aggregation -> SKU routing -> forecasting -> P10/P50/P90
-                                     |
-                                     v
-                         warehouse allocation (shares + MIN_SHARE)
-                                     |
-                                     v
-                        reorder engine (MOQ-aware, lead-time aware)
-                                     |
-                                     v
-                         decision_df (JSON-safe) + artifacts/*.csv
-```
+## Core Components
 
----
+### Data Generation & Hygiene
 
-## Repository structure (current)
-```
-StockIQ/
-  config/
-    world_config.json
-  Generate/
-    apply_campaigns.py
-    audit_data.py
-    fix_data.py
-    generate_campaigns.py
-    generate_inventory.py
-    generate_orders.py
-    generate_vendors.py
-  notebooks/
-    cod_intelligence.ipynb
-    forecasting_v2.ipynb
-    sku_mapping_and_reorder_engine.ipynb
-    models/
-      sarimax_SKU0001.pkl
-  output/
-    campaigns.csv
-    inventory_events.csv
-    orders.csv
-    vendors.csv
-  artifacts/
-    (generated at runtime)
-  scripts/
-    conunt.py
-    dyamic_engine.py
-  requirements.txt
-  README.md
-```
+- **Goal**: provide reproducible inputs that resemble real D2C operational tables.
+- **Where**: `Generate/` produces `output/orders.csv`, `output/inventory_events.csv`, `output/vendors.csv`, `output/campaigns.csv`.
+- **Why it matters**: the downstream system is built to be “production-shaped” (clean joins, explicit keys, audit checks), even when backed by synthetic data.
 
----
+### Demand Forecasting (why probabilistic forecasts matter)
 
-## What each folder/file does
+- **Model**: per-SKU SARIMAX on weekly demand (seasonality is modeled at weekly cadence).
+- **Output**: **P10 / P50 / P90** demand forecasts rather than a single number.
+- **Why probabilistic**: reorder decisions are asymmetric—under-ordering causes stockouts (lost revenue), over-ordering causes carrying cost/obsolescence. Quantiles make this trade-off explicit and tunable (e.g., plan at P90 during peak season).
 
-### `Generate/` (data generation + hygiene)
-Used to create reproducible synthetic CSV inputs under `output/`.
-- `generate_orders.py`: creates `output/orders.csv`
-- `generate_inventory.py`: creates `output/inventory_events.csv`
-- `generate_vendors.py`: creates `output/vendors.csv`
-- `generate_campaigns.py`: creates `output/campaigns.csv`
-- `apply_campaigns.py`: injects campaign uplift into orders (creates/updates campaign signals)
-- `fix_data.py`: repairs common issues in generated outputs
-- `audit_data.py`: validates cross-file consistency
+### SKU Routing & Fallback Strategy
 
-### `output/` (inputs to notebooks)
-- `orders.csv`: transactional orders (SKU demand + operational signals like region, payment type)
-- `inventory_events.csv`: event-sourced inventory changes by warehouse
-- `vendors.csv`: vendor parameters per SKU (lead time, MOQ)
-- `campaigns.csv`: campaign definitions/schedules
+Not every SKU should (or can) use the same model.
 
-### `notebooks/`
-- `forecasting_v2.ipynb`: weekly aggregation + SARIMAX pipeline + evaluation
-- `sku_mapping_and_reorder_engine.ipynb`: routing + warehouse allocation + reorder decisions
-- `cod_intelligence.ipynb`: COD/RTO metrics + policy artifact
-- `notebooks/models/`: example serialized SARIMAX model outputs
+- **Routing** chooses a forecasting strategy per SKU based on data sufficiency and stability.
+- **Fallbacks** keep the system deterministic and resilient:
+  - Use SARIMAX when history supports it
+  - Otherwise route to a simpler baseline (recent history / naive / seasonal heuristic)
 
-### `artifacts/` (monitoring / review outputs)
-Generated by notebooks (not served by the API by default).
-- `sku_demand_allocation_debug.csv`: SKU-level allocated sums used to validate allocation
-- `cod_intelligence.csv`: COD intelligence artifact
+This prevents pipeline failure and avoids “pretend precision” on sparse SKUs.
 
-### `scripts/`
-- `conunt.py`: SKU coverage audit across CSVs
-- `dyamic_engine.py`: experimental runner (kept as-is; consider renaming before production)
+### Inventory & Warehouse Allocation
 
----
+- **Inventory modeling** treats stock as multi-warehouse, event-sourced movements.
+- **Allocation** splits forecasted SKU demand across warehouses using stable shares and invariants:
+  - Shares sum to 1.0 (no demand multiplication)
+  - A minimum allocation floor (risk floor) can be applied before re-normalization
 
-## Runbook (Windows / PowerShell)
+This makes reorder decisions warehouse-specific without inflating total demand.
 
-### 1) Setup
-```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-```
+### Reorder Logic (lead time, MOQ, safety stock)
 
-### 2) Generate data (optional; order matters)
-```powershell
-python Generate\generate_vendors.py
-python Generate\generate_inventory.py
-python Generate\generate_orders.py
-python Generate\generate_campaigns.py
-python Generate\apply_campaigns.py
-python Generate\audit_data.py
-```
+The reorder engine converts forecast + inventory state into an order decision.
 
-### 3) Run notebooks
-- Run `notebooks/forecasting_v2.ipynb` for forecasts (P10/P50/P90)
-- Run `notebooks/sku_mapping_and_reorder_engine.ipynb` for reorder decisions (`decision_df`) and allocation debug CSV
-- Run `notebooks/cod_intelligence.ipynb` for COD intelligence artifact
+- **Inventory position** (conceptually): on-hand + inbound − committed/backorders
+- **Reorder point**: expected demand during lead time + safety stock
+- **Safety stock**: derived from uncertainty (e.g., using P90 vs P50, or a policy that maps service level → quantile)
+- **MOQ-aware ordering**: recommended quantities respect minimum order quantities per SKU/vendor
 
-### 4) Quick input sanity check
-```powershell
-python scripts\conunt.py
-```
+The result is a deterministic output you can audit, version, and serve.
 
----
+### COD Intelligence (RTO risk, policy actions)
 
-## Production-readiness notes (what’s already implemented)
-- **No demand multiplication**: SKU-level demand is allocated across warehouses (shares sum to 1.0).
-- **Risk floor**: `MIN_SHARE` ensures no active warehouse gets ~0 exposure; shares are renormalized.
-- **Fault tolerance**: missing forecasts route to history → naive fallbacks.
-- **API-safe output**: decision tables are pandas DataFrames designed to be JSON-serializable.
-- **Observability**: allocation debug artifacts are written for monitoring.
+- COD intelligence classifies SKUs/lanes into **RTO risk buckets**.
+- Policies then translate risk into a clear business action:
+  - `ALLOW_COD`
+  - `LIMIT_COD`
+  - `DISABLE_COD`
 
----
+This layer makes reorder recommendations “decision-aware” (not purely demand-driven).
 
-## Next steps (recommended)
-1. Extract notebook logic into a module (e.g., `stockiq/engine.py`) with unit tests.
-2. Add a minimal FastAPI endpoint returning decisions as JSON.
-3. Add CI smoke checks: run `scripts/conunt.py` + a small allocation invariant test.
-   python -m venv .venv
-   .\.venv\Scripts\activate
+## COD Intelligence
 
-2. Install dependencies
+### What COD and RTO mean
 
-   pip install -r requirements.txt
+- **COD (Cash on Delivery)**: the customer pays upon delivery.
+- **RTO (Return to Origin)**: a shipment is returned to the seller (failed delivery / refusal / unreachable customer). High RTO creates logistics cost and inventory distortion.
 
-3. (Optional) Generate sample data
+### How COD risk is calculated (rule-based, explainable)
 
-   python Generate/generate_vendors.py
-   python Generate/generate_inventory.py
-   python Generate/generate_orders.py
-   python Generate/generate_campaigns.py
-   python Generate/apply_campaigns.py
+StockIQ treats COD intelligence as **explainable decisioning**, not a black box:
 
-4. Run forecasting pipeline
+- Aggregate order and delivery outcomes into metrics (e.g., historical RTO rate, COD share, lane-level instability).
+- Apply deterministic rules to map metrics → a risk score / bucket.
+- Emit a policy action that downstream systems can enforce.
 
-   - Open `notebooks/forecasting_v2.ipynb` and run cells in order (or extract the notebook code into a script for reproducible runs).
+This is intentionally audit-friendly: every risk label can be traced back to a small set of interpretable features and thresholds.
 
-5. Run reorder engine
+### Risk buckets
 
-   - Open `notebooks/sku_mapping_and_reorder_engine.ipynb` and run cells in order. This writes `artifacts/sku_demand_allocation_debug.csv` and produces `decision_df`.
+- **LOW**: stable COD performance, acceptable RTO
+- **MEDIUM**: mixed performance, apply guardrails
+- **HIGH**: consistently poor COD outcomes, high expected logistics waste
 
-6. Quick checks
+### Business actions
 
-   python scripts/conunt.py  # SKU coverage audit
+- `ALLOW_COD`: no restrictions
+- `LIMIT_COD`: restrict COD eligibility (e.g., specific lanes, cart value caps, higher confirmation requirements)
+- `DISABLE_COD`: do not offer COD for that SKU/lane segment
 
-Notes on converting to production:
-- Extract core engine functions and represent them as deterministic Python functions (no global notebook state). Add unit tests and package the result as `stockiq.engine`.
-- Add a FastAPI wrapper around a function that returns `decision_df.to_dict(orient='records')`.
+### How COD intelligence modifies reorder decisions
 
----
+COD policy affects reorder decisions by changing the *effective* demand the business is willing to serve:
 
-## 4) Core components (technical detail)
+- If COD is **limited/disabled** for a SKU segment, the reorder engine can reduce planned demand for that segment and avoid over-ordering stock that would churn through RTO.
+- The final recommendation includes both **inventory actions** (reorder) and **policy actions** (COD), allowing downstream enforcement and clearer trade-offs.
 
-Demand forecasting
-- Approach: per-SKU SARIMAX when enough weekly history exists. Seasonality baseline uses s=52 for weekly data.
-- Outputs: `p50` (predicted mean) and prediction intervals. P10/P90 derived from model intervals for safety-stock computations.
+## Decision Flow Example
 
-SKU routing and fallbacks
-- `route_sku()` uses deterministic thresholds to choose between `PRIMARY_SARIMAX`, `FALLBACK_HISTORY`, `FALLBACK_NAIVE`.
-- All outputs include `demand_source` to make strategy usage auditable.
+Example narrative for a single SKU (SKU123) across one warehouse:
 
-Warehouse allocation
-- Preference order:
-  1. Historical outbound orders per `(sku_id, warehouse)`
-  2. Inventory snapshot distribution per `(sku_id, warehouse)`
-  3. Equal split across active warehouses
-- Enforce `MIN_SHARE` (configurable; default 0.05) per active warehouse, renormalize so shares sum to 1.0. Business rationale: avoid zero-exposure warehouses and make allocation robust to reporting gaps.
+1. **Forecast**: SARIMAX generates weekly demand quantiles: P10=80, P50=120, P90=170.
+2. **Routing**: SKU123 has sufficient history → uses SARIMAX (no fallback).
+3. **Inventory**: Warehouse W1 inventory position is 90 units; vendor lead time is 2 weeks; MOQ is 200.
+4. **Reorder policy (uncertainty-aware)**:
+   - The business chooses a higher service level for this SKU → plans demand at P90.
+   - Lead-time demand ≈ 2 × 170 = 340.
+   - Reorder point is set accordingly (plus any safety stock policy).
+5. **Reorder decision (MOQ-aware)**:
+   - Target stock (policy-driven) − inventory position → raw order quantity.
+   - Apply MOQ → recommended order quantity becomes at least 200.
+6. **COD intelligence**:
+   - COD outcomes for SKU123 place it in **HIGH** RTO risk.
+   - Policy action becomes `DISABLE_COD`.
+7. **Final decision**:
+   - The reorder engine reduces exposure to COD-driven demand and returns a final recommended order quantity.
+   - Output includes both `recommended_order_qty` and the COD policy (`cod_risk`, `cod_action`) so the decision is enforceable.
 
-Reorder engine
-- `reorder_point = allocated_expected + allocated_safety`
-- `recommended_order_qty` is rounded up to the nearest `MOQ` when `inventory_position` ≤ `reorder_point`.
-- All numeric outputs are coerced to safe numeric types with NaNs replaced by 0.0 for JSON serialization.
+The key point: **uncertainty (P10/P50/P90) and risk (COD/RTO) directly influence the final business action**, not just the model output.
 
-COD intelligence
-- Aggregates COD share and RTO rate per `(sku_id, region)` and maps to `warehouse_id`. Produces risk buckets and policy actions used by operations.
+## Final Output Artifacts
 
----
+StockIQ is designed to output “API-ready” decision tables and audit artifacts.
 
-## 5) Operational checks & diagnostics
-Artifacts and checks to run as part of validation or CI:
+### Recommendation schema (CSV/JSON)
 
-- `scripts/conunt.py`: confirm input CSVs exist and report SKU counts.
-- `artifacts/sku_demand_allocation_debug.csv`: validate that per-SKU `allocated_expected_sum` ≈ SKU-level expected totals (tolerance for fallbacks).
-- Notebook sanity checks: ensure `decision_df` has no NaNs in required numeric columns and `recommended_order_qty` is non-negative integer.
+The final recommendation record is expected to include (at minimum):
 
-Suggested CI steps:
-- `python scripts/conunt.py` (fail on missing inputs)
-- Unit tests for `MIN_SHARE` enforcement and renormalization.
+- `sku_id`
+- `warehouse_id`
+- `inventory_position`
+- `reorder_point`
+- `recommended_order_qty`
+- `cod_risk` (LOW / MEDIUM / HIGH)
+- `cod_action` (ALLOW_COD / LIMIT_COD / DISABLE_COD)
 
----
+### Repo artifacts
 
-## 6) Recommendations & next steps
-Short roadmap to production readiness:
+Generated outputs (examples in this repo):
 
-1. Extract engine into a small package (e.g., `stockiq.engine`) and add unit tests.
-2. Add a minimal FastAPI wrapper that exposes a `POST /decisions` endpoint returning `decision_df` as JSON and an optional debug flag to write artifacts.
-3. Add CI checks and a lightweight integration test that runs the pipeline against synthetic data from `Generate/` and asserts diagnostic invariants.
-4. Add proper environment/config management (separate `config` for prod vs dev) and model metadata persistence (training date, transforms used).
+- `artifacts/sku_demand_allocation_debug.csv`
+- `artifacts/sku_reorder_summary.csv`
+- `artifacts/warehouse_reorder_decisions.csv`
+- `artifacts/reorder_recommendations.csv`
+- `artifacts/cod_intelligence.csv`
 
----
+## Tech Stack
 
-If you want, I will now:
+- **Language**: Python
+- **Data**: Pandas, NumPy
+- **Forecasting**: Statsmodels (SARIMAX)
+- **Utilities**: Faker, tqdm, python-dateutil
+- **Planned**: FastAPI (serving recommendations), Streamlit (ops dashboard)
 
-1) implement a one-file FastAPI wrapper to serve `decision_df` (with debug flag), or
-2) extract the engine code into a proper module and add unit tests for allocation and no-NaN guarantees.
+## Why This Is Production-Ready
 
-Reply with `1` or `2` (or both) and I will implement the chosen step next.
+- **Deterministic logic around the model**: routing, fallbacks, reorder constraints, and COD policies are explicit and testable.
+- **Explainable decisions**: quantiles + policy thresholds make “why” legible to stakeholders.
+- **Model serialization**: SARIMAX models can be saved/loaded to support reproducible inference.
+- **API-ready outputs**: decisions are structured as flat records suitable for JSON and downstream systems.
+- **Offline vs online separation**: forecasting/training can run offline; serving is a thin layer that reads the latest artifacts and returns decisions.
+
+## Future Extensions
+
+- FastAPI endpoints
+- Batch forecasting
+- Scenario analysis
+- Dashboarding
+
+## Skills Demonstrated
+
+- Time-series forecasting (SARIMAX) and uncertainty quantification (P10/P50/P90)
+- Inventory optimization under constraints (MOQ, lead time, service level)
+- Decision intelligence (policy + model outputs → deterministic actions)
+- Multi-warehouse allocation and invariants (no demand multiplication)
+- Backend/API readiness via stable schemas and explainable outputs
+- Product/system thinking: end-to-end pipeline design with auditability
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
