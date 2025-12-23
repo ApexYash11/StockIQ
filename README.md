@@ -1,264 +1,166 @@
-# StockIQ
+\# StockIQ
 
-## Executive summary
-StockIQ is a production-oriented Inventory, Forecasting, and Decision Intelligence system for direct-to-consumer (D2C) operations. It converts raw order and inventory events into probabilistic weekly demand forecasts (P10 / P50 / P90), routes SKUs to appropriate forecasting strategies, allocates demand across warehouses, and emits MOQ-aware, uncertainty-informed reorder recommendations ready for API serving and operational review.
+StockIQ is an end-to-end Inventory, Forecasting, and Decision Intelligence system for D2C operations. It generates (or consumes) order + inventory data, produces weekly probabilistic forecasts (P10/P50/P90), routes SKUs to the best available strategy, allocates SKU demand across warehouses (without demand multiplication), and outputs MOQ-aware reorder recommendations plus monitoring artifacts.
 
-## System overview
-- Input: `orders.csv`, `inventory_events.csv`, `vendors.csv`, `campaigns.csv`.
-- Data preparation: calendar-safe weekly aggregation and campaign-intensity features.
-- Routing: deterministic per-SKU routing to `PRIMARY_SARIMAX`, `FALLBACK_HISTORY`, or `FALLBACK_NAIVE` based on history length.
-- Forecasting: SARIMAX per-SKU where sufficient history exists; outputs P50 and predictive intervals used to derive P10/P90.
-- Allocation: SKU totals are allocated to warehouses using historical shares with a minimum-share floor and renormalization.
-- Decisioning: warehouse-level reorder points computed as allocated expected demand (lead time) + allocated safety stock; recommended orders respect `MOQ`.
-- Artifacts: JSON-ready `decision_df` and audit CSVs (e.g., `sku_demand_allocation_debug.csv`) for monitoring and senior review.
+---
 
-## High-level architecture
+## Why this repo exists
+- Demonstrate **probabilistic demand forecasting** (SARIMAX) for weekly SKU demand.
+- Demonstrate **production-style decisioning** (routing, fallbacks, constraints like MOQ).
+- Demonstrate **multi-warehouse allocation** with a minimum risk floor (`MIN_SHARE`) and renormalization.
+- Provide **auditability** via CSV artifacts suitable for monitoring and senior review.
+
+---
+
+## Architecture (render-safe)
+
+### Mermaid (renders on GitHub; some viewers may hide it)
 ```mermaid
 flowchart LR
-  A[Raw Data: orders, inventory, vendors, campaigns] --> B[ETL & Weekly Aggregation]
-  B --> C[SKU Routing]
-  C --> D[Demand Forecasting (SARIMAX or fallback)]
-  D --> E[Forecast Outputs (P10/P50/P90)]
-  E --> F[Warehouse Demand Allocation (historical shares + MIN_SHARE)]
-  F --> G[Reorder Engine (MOQ-aware, safety stock)]
-  G --> H[Decisions (JSON) & Audit Artifacts (CSV)]
-  A --> I[COD Intelligence]
+  A[output/*.csv inputs] --> B[Weekly aggregation]
+  B --> C[SKU routing]
+  C --> D[Forecasting (SARIMAX / history / naive)]
+  D --> E[P10/P50/P90]
+  E --> F[Warehouse allocation (shares + MIN_SHARE)]
+  F --> G[Reorder engine (MOQ-aware)]
+  G --> H[Decisions + artifacts]
+  A --> I[COD intelligence]
   I --> H
-  H --> J[API Layer (FastAPI) / Monitoring / Dashboards]
 ```
 
-## Core components
+### ASCII fallback (always visible)
+```
+output/*.csv
+   |
+   v
+weekly aggregation -> SKU routing -> forecasting -> P10/P50/P90
+                                     |
+                                     v
+                         warehouse allocation (shares + MIN_SHARE)
+                                     |
+                                     v
+                        reorder engine (MOQ-aware, lead-time aware)
+                                     |
+                                     v
+                         decision_df (JSON-safe) + artifacts/*.csv
+```
 
-### Demand Forecasting
-- Per-SKU SARIMAX where history supports seasonality (s=52 weekly).
-- Produces predictive mean and intervals; P10/P90 come from model predictive intervals (or bootstrap for non-Gaussian cases).
-- Probabilistic forecasts enable safety-stock calculations and risk-aware ordering.
+---
 
-### SKU Routing
-- Deterministic thresholds route SKUs to either SARIMAX (`PRIMARY_SARIMAX`) or fallbacks (`FALLBACK_HISTORY`, `FALLBACK_NAIVE`).
-- Routing preserves stability and observability: each decision records `demand_source`.
+## Repository structure (current)
+```
+StockIQ/
+  config/
+    world_config.json
+  Generate/
+    apply_campaigns.py
+    audit_data.py
+    fix_data.py
+    generate_campaigns.py
+    generate_inventory.py
+    generate_orders.py
+    generate_vendors.py
+  notebooks/
+    cod_intelligence.ipynb
+    forecasting_v2.ipynb
+    sku_mapping_and_reorder_engine.ipynb
+    models/
+      sarimax_SKU0001.pkl
+  output/
+    campaigns.csv
+    inventory_events.csv
+    orders.csv
+    vendors.csv
+  artifacts/
+    (generated at runtime)
+  scripts/
+    conunt.py
+    dyamic_engine.py
+  requirements.txt
+  README.md
+```
 
-### Inventory & Reorder Engine
-- Warehouse allocation computed from historical outbound shares; fallback to inventory distribution or equal split.
-- Enforces a `MIN_SHARE` floor per active warehouse to avoid zero-exposure and renormalizes shares so SKU totals are preserved.
-- Warehouse-level reorder point = allocated expected demand (lead time) + allocated safety stock.
-- Recommended order quantity is rounded up to nearest `MOQ` when `inventory_position` ≤ `reorder_point`.
-- Outputs are JSON-serializable and include audit fields for traceability.
+---
 
-### COD Intelligence
-- Aggregates order-level COD behaviour and RTO rates per (sku, region/warehouse).
-- Produces RTO risk buckets and policy actions (ALLOW / LIMIT / DISABLE) to drive business rules.
+## What each folder/file does
 
-## Decision flow example (one SKU)
-1. Weekly aggregation yields a weekly time-series and `campaign_intensity`.
-2. SKU routing picks SARIMAX for a mature SKU.
-3. SARIMAX produces P50 and an 80% interval → P10/P90.
-4. Sum P50 across lead-time → SKU expected demand; sum P90−P50 → SKU safety stock.
-5. Compute warehouse shares from historical outbound ratios; apply MIN_SHARE floor and renormalize.
-6. Allocate SKU totals to warehouses by share and compute warehouse reorder points.
-7. If `inventory_position` ≤ reorder point, recommend order quantity rounded to `MOQ`.
+### `Generate/` (data generation + hygiene)
+Used to create reproducible synthetic CSV inputs under `output/`.
+- `generate_orders.py`: creates `output/orders.csv`
+- `generate_inventory.py`: creates `output/inventory_events.csv`
+- `generate_vendors.py`: creates `output/vendors.csv`
+- `generate_campaigns.py`: creates `output/campaigns.csv`
+- `apply_campaigns.py`: injects campaign uplift into orders (creates/updates campaign signals)
+- `fix_data.py`: repairs common issues in generated outputs
+- `audit_data.py`: validates cross-file consistency
 
-## Tech stack
-- Python 3.x, pandas, numpy
-- statsmodels (SARIMAX)
-- FastAPI-ready JSON outputs
-- Jupyter / Streamlit for experimentation and dashboards
+### `output/` (inputs to notebooks)
+- `orders.csv`: transactional orders (SKU demand + operational signals like region, payment type)
+- `inventory_events.csv`: event-sourced inventory changes by warehouse
+- `vendors.csv`: vendor parameters per SKU (lead time, MOQ)
+- `campaigns.csv`: campaign definitions/schedules
 
-## Why production-ready
-- Deterministic routing and guardrails prevent silent failures.
-- Forecasts and artifacts are versionable and serializable (`SARIMAXResults.save()`).
-- Fallback hierarchy prevents crashes on sparse data and is logged for observability.
-- Outputs are JSON-serializable, schema-friendly, and designed for FastAPI endpoints.
+### `notebooks/`
+- `forecasting_v2.ipynb`: weekly aggregation + SARIMAX pipeline + evaluation
+- `sku_mapping_and_reorder_engine.ipynb`: routing + warehouse allocation + reorder decisions
+- `cod_intelligence.ipynb`: COD/RTO metrics + policy artifact
+- `notebooks/models/`: example serialized SARIMAX model outputs
 
-## Monitoring & diagnostics
-- `sku_demand_allocation_debug.csv` – per-SKU allocated expected and safety sums for validation.
-- Counts of SKUs per strategy, fraction of fallbacks, calibration of P10–P90 coverage should be monitored.
+### `artifacts/` (monitoring / review outputs)
+Generated by notebooks (not served by the API by default).
+- `sku_demand_allocation_debug.csv`: SKU-level allocated sums used to validate allocation
+- `cod_intelligence.csv`: COD intelligence artifact
 
-## Future extensions
-- Batch inference service + scheduled re-runs with drift alerts.
-- FastAPI wrapper and request/response JSON schema with auth and request validation.
-- Optimization layer for cost-aware, consolidated purchase orders and cross-warehouse fulfillment.
-- Quantile ML models for sparse SKUs and hierarchical models to borrow strength across SKUs.
+### `scripts/`
+- `conunt.py`: SKU coverage audit across CSVs
+- `dyamic_engine.py`: experimental runner (kept as-is; consider renaming before production)
 
-## Skills demonstrated
-- Time-series forecasting and uncertainty quantification
-- Production-safe routing & fallback design for sparse data
-- Multi-warehouse demand allocation with risk floors and renormalization
-- Operationally aware reorder algorithms (MOQ, lead time, safety stock)
-- Observability and artifact design for audit and monitoring
+---
 
-## Repo layout (quick)
-- `/notebooks` — experiments: forecasting, SKU mapping, COD intelligence
-- `/scripts` — small utilities and validators
-- `/Generate` — synthetic data generators
-- `/output` — generated CSV inputs
-- `/artifacts` — debug CSVs and serialized models
+## Runbook (Windows / PowerShell)
 
-If you want, I can add a concise FastAPI wrapper that returns `decision_df` as JSON with request validation and an optional debug flag. 
-**StockIQ — Synthetic Demand & Inventory Demo**
-
-This repository builds a reproducible synthetic dataset for a demo of demand, campaigns, vendors, and event-sourced inventory suitable for analytics and ML experiments.
-
-**Quick Summary**:
-- **Purpose**: produce internally-consistent, ML-ready CSVs (`orders.csv`, `inventory_events.csv`, `vendors.csv`, `campaigns.csv`) with deterministic randomness so experiments are reproducible.
-- **Language / libs**: Python 3, pandas, numpy.
-- **Location of code**: `Generate/` contains all generation and post-processing scripts.
-
-**Files (top-level)**
-- `requirements.txt`: Python dependencies.
-- `config/world_config.json`: campaign & SKU tuning (source of truth for campaign parameters).
-- `output/`: destination for generated CSVs.
-- `Generate/`: scripts to generate, fix, apply campaigns, and audit.
-
-**Key CSV outputs (ML-ready)**
-- `output/orders.csv` — transactional orders. Columns include `order_id`, `order_date` (day offset), `sku_id`, `region`, `payment_type`, `delivery_days`, `delivery_status`, `campaign_applied`, `order_quantity`.
-- `output/inventory_events.csv` — event-sourced inventory stream. Event types: `INITIAL_STOCK`, `OUTBOUND`, `REPLENISHMENT_INBOUND`.
-- `output/vendors.csv` — vendor per SKU with `lead_time_days`, `MOQ`, `unit_cost`.
-- `output/campaigns.csv` — campaign definitions (seeded from config).
-
-**Primary Scripts**
-- `Generate/generate_orders.py` — generate baseline orders (uses config/world_config.json). See: [Generate/generate_orders.py](Generate/generate_orders.py)
-- `Generate/generate_vendors.py` — produce `vendors.csv` (one vendor per SKU). See: [Generate/generate_vendors.py](Generate/generate_vendors.py)
-- `Generate/generate_inventory.py` — produce event-sourced `inventory_events.csv` from orders + vendors. See: [Generate/generate_inventory.py](Generate/generate_inventory.py)
-- `Generate/apply_campaigns.py` — deterministic post-process that injects campaign-driven demand into `orders.csv` and validates uplift. See: [Generate/apply_campaigns.py](Generate/apply_campaigns.py)
-- `Generate/fix_data.py` — deduplicate and regenerate event streams; used to collapse exact order duplicates and ensure no permanent negative stock. See: [Generate/fix_data.py](Generate/fix_data.py)
-- `Generate/audit_data.py` — runs structural and cross-file validations and reports issues. See: [Generate/audit_data.py](Generate/audit_data.py)
-
-**How to run (recommended workflow)**
-1. Create & activate virtualenv, install deps:
-
+### 1) Setup
 ```powershell
-python -m venv venv
-venv\Scripts\Activate.ps1    # PowerShell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 ```
 
-2. Generate baseline data (order of commands matters):
-
+### 2) Generate data (optional; order matters)
 ```powershell
-venv\Scripts\python.exe Generate\generate_orders.py
-venv\Scripts\python.exe Generate\generate_vendors.py
-venv\Scripts\python.exe Generate\generate_inventory.py
+python Generate\generate_vendors.py
+python Generate\generate_inventory.py
+python Generate\generate_orders.py
+python Generate\generate_campaigns.py
+python Generate\apply_campaigns.py
+python Generate\audit_data.py
 ```
 
-3. (Optional) Apply campaign uplift deterministically:
+### 3) Run notebooks
+- Run `notebooks/forecasting_v2.ipynb` for forecasts (P10/P50/P90)
+- Run `notebooks/sku_mapping_and_reorder_engine.ipynb` for reorder decisions (`decision_df`) and allocation debug CSV
+- Run `notebooks/cod_intelligence.ipynb` for COD intelligence artifact
 
+### 4) Quick input sanity check
 ```powershell
-venv\Scripts\python.exe Generate\apply_campaigns.py
+python scripts\conunt.py
 ```
-
-4. If data has issues, run fix script:
-
-```powershell
-venv\Scripts\python.exe Generate\fix_data.py
-```
-
-5. Run the audit to validate everything:
-
-```powershell
-venv\Scripts\python.exe Generate\audit_data.py
-```
-
-**How campaigns are made detectable (design notes)**
-- Deterministic uplift: `Generate/apply_campaigns.py` enforces a minimum uplift (configurable constant `MIN_UPLIFT`) so campaign signal is detectable in downstream audits and ML validations without adding noise.
-- Focused uplift: injected orders preferentially use the top fraction of SKUs by historical volume (`TOP_SKU_FRAC`) to reflect realistic promotional concentration.
-- No duplicates: injected rows receive deterministic `order_id` values prefixed with `CAM_...` and the script guarantees no `order_id` collisions with existing orders.
-- Reproducibility: script uses a fixed RNG seed and deterministic id generation.
-
-**Validation & Safety**
-- `apply_campaigns.py` performs a post-check asserting mean orders/day DURING campaign windows exceeds OUTSIDE by a configurable multiplier `MIN_MEAN_MULT`.
-- `fix_data.py` regenerates `inventory_events.csv` and asserts final stock is non-negative for all `(warehouse,sku)` pairs.
-- `audit_data.py` performs structural checks, cross-file consistency, inventory event type checks, and RTO sanity checks.
-
-**Tuning tips**
-- To strengthen campaigns, edit `config/world_config.json` to increase `uplift` per campaign or change campaign `start_day`/`duration_days`.
-- To concentrate uplift more, adjust `TOP_SKU_FRAC` inside `Generate/apply_campaigns.py` (lower means narrower SKU focus).
-- To make smaller changes, lower `MIN_UPLIFT` or adjust `MIN_MEAN_MULT` threshold in the script.
-# StockIQ — Detailed repository guide
-
-This README is a reviewer-oriented, production-ready description of the StockIQ project. It explains the system purpose, per-file responsibilities, operational assumptions, run instructions, and recommended next steps for production hardening.
-
-## Executive summary
-StockIQ is an end-to-end Inventory, Forecasting, and Decision Intelligence system for D2C operations. It: 
-
-- Produces weekly probabilistic demand forecasts (P10 / P50 / P90) for SKUs where sufficient history exists.
-- Routes SKUs to the best available strategy (SARIMAX primary, history fallback, naive fallback).
-- Allocates SKU demand across warehouses using historical shares with a configurable minimum-share floor and renormalization.
-- Emits MOQ-aware reorder recommendations per warehouse and writes audit artifacts for monitoring and validation.
-
-Goal: provide deterministic, auditable decisions suitable for wrapping behind a FastAPI service while demonstrating strong ML, data-engineering, and product thinking.
 
 ---
 
-## Table of contents
-1. Project layout (file-by-file)
-2. End-to-end flow (diagram)
-3. How to run (developer runbook)
-4. Core components (technical detail)
-5. Operational checks & diagnostics
-6. Recommendations & next steps
+## Production-readiness notes (what’s already implemented)
+- **No demand multiplication**: SKU-level demand is allocated across warehouses (shares sum to 1.0).
+- **Risk floor**: `MIN_SHARE` ensures no active warehouse gets ~0 exposure; shares are renormalized.
+- **Fault tolerance**: missing forecasts route to history → naive fallbacks.
+- **API-safe output**: decision tables are pandas DataFrames designed to be JSON-serializable.
+- **Observability**: allocation debug artifacts are written for monitoring.
 
 ---
 
-## 1) Project layout (file-by-file)
-Top-level files and directories with their responsibilities (accurate to repository state):
-
-- `README.md` — this file.
-- `requirements.txt` — Python dependencies used by notebooks and scripts.
-
-- `config/world_config.json` — environment/config defaults used by notebooks (region mappings, constants).
-
-- `Generate/` — development helpers and synthetic-data generators. Useful for reproducible local testing.
-  - `generate_orders.py` — synthetic orders generator.
-  - `generate_inventory.py` — generate inventory event streams.
-  - `generate_vendors.py` — create vendor lead-times and MOQ data.
-  - `generate_campaigns.py`, `apply_campaigns.py` — produce and apply campaign/exogenous signals.
-  - `fix_data.py` — cleaning helpers for generated CSVs.
-  - `audit_data.py` — data checks and asserts.
-
-- `notebooks/` — runnable, linear pipelines and analysis (recommended extraction into modules for production):
-  - `forecasting_v2.ipynb` — weekly aggregation, SARIMAX model workflow (fit, validation, future forecast), and evaluation metrics.
-  - `sku_mapping_and_reorder_engine.ipynb` — SKU routing, warehouse allocation (historical → inventory → equal), MIN_SHARE floor enforcement, allocation, MOQ-aware reorder logic, and audit artifact generation.
-  - `cod_intelligence.ipynb` — COD / RTO analysis and policy artifact generation.
-  - `notebooks/models/` — saved model pickles (example SARIMAXResults).
-
-- `output/` — input CSVs used by notebooks (canonical inputs for runs):
-  - `orders.csv`, `inventory_events.csv`, `vendors.csv`, `campaigns.csv`.
-
-- `artifacts/` — generated audit outputs and serialized models.
-  - `sku_demand_allocation_debug.csv` — SKU-level allocated sums (monitoring artifact).
-  - `cod_intelligence.csv` — COD policy artifact.
-
-- `scripts/` — small utilities for CI and operations:
-  - `conunt.py` — SKU coverage audit (auto-detect SKU columns and report counts).
-  - `dyamic_engine.py` — experimental runner.
-
----
-
-## 2) End-to-end flow (diagram)
-```mermaid
-flowchart LR
-  A[Raw CSVs: orders, inventory, vendors, campaigns] --> B[ETL & Weekly Aggregation]
-  B --> C[SKU Routing (thresholds)]
-  C --> D[Forecasting: SARIMAX or fallback]
-  D --> E[Forecast outputs: P10 / P50 / P90]
-  E --> F[Warehouse allocation: history -> inventory -> equal; MIN_SHARE enforced]
-  F --> G[Reorder engine (reorder_point = allocated_expected + allocated_safety)]
-  G --> H[Decision outputs (JSON) + Artifacts (CSV)]
-  A --> I[COD Intelligence]
-  I --> H
-  H --> J[Serving Layer (FastAPI) / Monitoring]
-```
-
-Notes: the pipeline is intentionally modular to allow extraction of each stage (forecasting, allocation, decisioning) to separate services.
-
----
-
-## 3) How to run (developer runbook)
-Minimal sequence to reproduce artifacts locally.
-
-1. Create & activate environment
-
+## Next steps (recommended)
+1. Extract notebook logic into a module (e.g., `stockiq/engine.py`) with unit tests.
+2. Add a minimal FastAPI endpoint returning decisions as JSON.
+3. Add CI smoke checks: run `scripts/conunt.py` + a small allocation invariant test.
    python -m venv .venv
    .\.venv\Scripts\activate
 
