@@ -3,3 +3,8 @@ numpy
 faker
 tqdm
 python-dateutil
+fastapi
+uvicorn
+pandas
+pydantic
+python-dotenv
