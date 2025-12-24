@@ -36,6 +36,10 @@ def load_artifacts(artifacts_dir: Path | str | None = None):
     reorder_path = ARTIFACTS_DIR / "reorder_recommendations.csv"
     state.reorder_df = _read_csv_safe(reorder_path)
 
+    # Forecasts
+    forecast_path = ARTIFACTS_DIR / "weekly_forecast_future.csv"
+    state.forecast_df = _read_csv_safe(forecast_path)
+
     # COD intelligence: prefer `cod_recommendations.csv` but fall back to `cod_intelligence.csv`
     cod_path = ARTIFACTS_DIR / "cod_recommendations.csv"
     alt_cod_path = ARTIFACTS_DIR / "cod_intelligence.csv"
@@ -55,7 +59,57 @@ def load_artifacts(artifacts_dir: Path | str | None = None):
     else:
         state.metadata = {}
 
-    return {
+    # compute simple metadata
+    meta = {
         "reorder_rows": len(state.reorder_df),
         "cod_rows": len(state.cod_df),
+        "forecast_rows": len(state.forecast_df),
     }
+    state.metadata = {**(state.metadata or {}), **meta}
+    return meta
+
+
+def load_models(models_dir: Path | str | None = None):
+    """Inspect and register PKL models as metadata in `state.models`.
+
+    This function does NOT execute or expose model objects. It only records
+    filename, path, mtime, sha256 and an inferred type string.
+    """
+    import hashlib
+    import pickle
+
+    models_path = Path(models_dir) if models_dir is not None else Path("notebooks/models")
+    models_meta = {}
+    if not models_path.exists():
+        state.models = models_meta
+        return models_meta
+
+    for p in models_path.glob("*.pkl"):
+        try:
+            raw = p.read_bytes()
+            sha = hashlib.sha256(raw).hexdigest()
+            mtime = p.stat().st_mtime
+            size = p.stat().st_size
+            obj = None
+            safe_type = "unknown"
+            try:
+                with open(p, "rb") as f:
+                    obj = pickle.load(f)
+                safe_type = type(obj).__name__
+            except Exception:
+                obj = None
+                safe_type = "unloadable"
+
+            models_meta[p.name] = {
+                "path": str(p),
+                "mtime": mtime,
+                "sha256": sha,
+                "size": size,
+                "type": safe_type,
+                "loadable": obj is not None,
+            }
+        except Exception:
+            continue
+
+    state.models = models_meta
+    return models_meta
