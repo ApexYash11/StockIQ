@@ -3,6 +3,29 @@ from typing import Optional, List
 from app import state
 
 router = APIRouter()
+@router.get("", tags=["COD"])
+def list_cod(
+    sku_id: Optional[str] = Query(None, description="Filter by SKU id (exact match)"),
+    warehouse_id: Optional[str] = Query(None, description="Filter by warehouse_id (exact match)"),
+):
+    """Return COD intelligence rows. If no filters provided, returns all rows (caller beware)."""
+
+    df = state.cod_df
+    if df is None or df.empty:
+        return []
+
+    df2 = df.copy()
+    if sku_id is not None:
+        sku = str(sku_id).strip()
+        if "sku_id" in df2.columns:
+            df2 = df2[df2["sku_id"].astype(str).str.strip() == sku]
+
+    if warehouse_id is not None:
+        wh = str(warehouse_id).strip()
+        if "warehouse_id" in df2.columns:
+            df2 = df2[df2["warehouse_id"].astype(str).str.strip() == wh]
+
+    return df2.to_dict(orient="records")
 @router.get("/decision", tags=["COD"])
 def cod_decision(
     request: Request,
