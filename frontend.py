@@ -49,7 +49,7 @@ def page_forecasts(api_base: str):
         try:
             data = api_get(api_base, "/forecasts", params)
             df = pd.DataFrame(data)
-            st.dataframe(df, use_container_width=True, height=TABLE_HEIGHT, hide_index=True)
+            st.dataframe(df, width='stretch', height=TABLE_HEIGHT, hide_index=True)
 
             if "week" in df.columns and "p50" in df.columns:
                 df["week"] = pd.to_datetime(df["week"])
@@ -83,7 +83,7 @@ def page_reorders(api_base: str):
         try:
             data = api_get(api_base, "/reorder", params)
             df = pd.DataFrame(data)
-            st.dataframe(df, use_container_width=True, height=TABLE_HEIGHT, hide_index=True)
+            st.dataframe(df, width='stretch', height=TABLE_HEIGHT, hide_index=True)
         except Exception as e:
             st.error(str(e))
 
