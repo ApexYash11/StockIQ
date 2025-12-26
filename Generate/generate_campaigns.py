@@ -1,29 +1,25 @@
-import json
-import os
 import pandas as pd
+import numpy as np
+import os
+from datetime import datetime, timedelta
 
-# load config relative to this script so script works when run from any CWD
-base_dir = os.path.dirname(os.path.abspath(__file__))
-cfg_path = os.path.join(base_dir, "..", "config", "world_config.json")
-cfg_path = os.path.abspath(cfg_path)
-with open(cfg_path) as f:
-    cfg = json.load(f)
+np.random.seed(42)
+OUTPUT_DIR = "output"
+os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-campaigns = []
+START_DATE = datetime(2023, 1, 1)
 
-for c in cfg["campaigns"]:
-    campaigns.append({
-        "campaign_id": c["name"],
-        "start_day": c["start_date_offset"],
-        "duration_days": c["duration_days"],
-        "uplift": c["uplift_multiplier"],
-        "categories": ",".join(c["affected_categories"])
+rows = []
+
+for i in range(6):
+    start_week = np.random.randint(10, 80)
+    duration = np.random.randint(2, 6)
+
+    rows.append({
+        "campaign_id": f"CAMP_{i}",
+        "start_date": (START_DATE + timedelta(weeks=start_week)).date(),
+        "end_date": (START_DATE + timedelta(weeks=start_week + duration)).date(),
+        "uplift_multiplier": round(np.random.uniform(1.2, 1.8), 2),
     })
 
-df = pd.DataFrame(campaigns)
-
-# ensure output directory exists and write CSV there
-out_dir = os.path.join(base_dir, "..", "output")
-os.makedirs(out_dir, exist_ok=True)
-out_file = os.path.abspath(os.path.join(out_dir, "campaigns.csv"))
-df.to_csv(out_file, index=False)
+pd.DataFrame(rows).to_csv(f"{OUTPUT_DIR}/campaigns.csv", index=False)

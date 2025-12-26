@@ -1,55 +1,68 @@
-import json
-import os
 import numpy as np
 import pandas as pd
-from tqdm import tqdm
+from datetime import datetime, timedelta
+import os
 
-# constants
-DAYS = 365 * 2
-ORDERS_PER_DAY = 3000  # scale this
+np.random.seed(42)
 
-# load config relative to this script so script works when run from any CWD
-base_dir = os.path.dirname(os.path.abspath(__file__))
-cfg_path = os.path.join(base_dir, "..", "config", "world_config.json")
-with open(os.path.abspath(cfg_path)) as f:
-    cfg = json.load(f)
+# ---------------- CONFIG ----------------
+START_DATE = datetime(2023, 1, 1)
+NUM_WEEKS = 104
+SKUS = [f"SKU{i:04d}" for i in range(1, 51)]
+WAREHOUSES = ["east", "west", "north", "south"]
 
-orders = []
+BASE_DEMAND = 200
+OUTPUT_DIR = "output"
+os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-# fallback defaults
-default_sku = {"sku_id": "UNKNOWN", "base_daily_demand": 1, "demand_volatility": 1}
-default_region = {"name": "unknown", "COD_rate": 0.0, "RTO_rate_for_COD": 0.0, "RTO_rate_for_prepaid": 0.0, "avg_delivery_days": 3}
+# SKU lifecycle params
+sku_params = {
+    sku: {
+        "launch_week": np.random.randint(0, 40),
+        "peak_week": np.random.randint(40, 80),
+        "decay_rate": np.random.uniform(0.005, 0.02),
+        "volatility": np.random.uniform(0.1, 0.25),
+    }
+    for sku in SKUS
+}
 
-skus = cfg.get("skus", [])
-regions = cfg.get("regions", [])
+rows = []
 
-for day in tqdm(range(DAYS)):
-    for _ in range(ORDERS_PER_DAY):
-        sku = np.random.choice(skus) if skus else default_sku
-        region = np.random.choice(regions) if regions else default_region
+for week in range(NUM_WEEKS):
+    week_start = START_DATE + timedelta(weeks=week)
 
-        base = sku.get("base_daily_demand", 1)
-        volatility = sku.get("demand_volatility", 1)
-        demand = max(1, int(np.random.normal(base, volatility)))
+    # weekly seasonality (simple + interpretable)
+    seasonality = 1.0 + 0.2 * np.sin(2 * np.pi * week / 52)
 
-        is_cod = np.random.rand() < region.get("COD_rate", 0.0)
-        rto_prob = region.get("RTO_rate_for_COD") if is_cod else region.get("RTO_rate_for_prepaid")
-        rto_prob = rto_prob if rto_prob is not None else 0.0
+    for sku in SKUS:
+        p = sku_params[sku]
 
-        rto = np.random.rand() < rto_prob
+        if week < p["launch_week"]:
+            continue
 
-        orders.append({
-            "order_date": day,
-            "sku_id": sku.get("sku_id", "UNKNOWN"),
-            "region": region.get("name", "unknown"),
-            "payment_type": "COD" if is_cod else "PREPAID",
-            "delivery_days": int(np.random.normal(region.get("avg_delivery_days", 3), 1)),
-            "delivery_status": "RTO" if rto else "DELIVERED"
-        })
+        if week <= p["peak_week"]:
+            lifecycle_multiplier = (week - p["launch_week"] + 1) / (
+                p["peak_week"] - p["launch_week"] + 1
+            )
+        else:
+            lifecycle_multiplier = np.exp(
+                -p["decay_rate"] * (week - p["peak_week"])
+            )
 
-# ensure output dir exists and write CSV
-out_dir = os.path.abspath(os.path.join(base_dir, "..", "output"))
-os.makedirs(out_dir, exist_ok=True)
-out_file = os.path.join(out_dir, "orders.csv")
-df = pd.DataFrame(orders)
-df.to_csv(out_file, index=False)
+        mean_demand = BASE_DEMAND * lifecycle_multiplier * seasonality
+        noise = np.random.normal(0, p["volatility"] * mean_demand)
+        weekly_demand = max(0, int(mean_demand + noise))
+
+        for _ in range(weekly_demand):
+            rows.append({
+                "order_date": week_start.date(),
+                "order_week": week_start.strftime("%Y-%W"),
+                "sku_id": sku,
+                "warehouse_id": np.random.choice(WAREHOUSES),
+                "payment_type": np.random.choice(["COD", "PREPAID"], p=[0.45, 0.55]),
+                "delivery_status": np.random.choice(
+                    ["DELIVERED", "RTO"], p=[0.75, 0.25]
+                ),
+            })
+
+pd.DataFrame(rows).to_csv(f"{OUTPUT_DIR}/orders.csv", index=False)
