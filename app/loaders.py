@@ -4,69 +4,15 @@ import pandas as pd
 from pathlib import Path
 from app import state
 
-ARTIFACTS_DIR = Path(os.getenv("ARTIFACTS_DIR", "artifacts"))
-
-
-def _read_csv_safe(path: Path):
-    if path.exists():
-        try:
-            return pd.read_csv(path)
-        except Exception:
-            return pd.DataFrame()
-    return pd.DataFrame()
-
-
-# Initialize safe defaults at module import time so `state` is always defined.
-state.reorder_df = pd.DataFrame()
-state.cod_df = pd.DataFrame()
-state.metadata = {}
-
 
 def load_artifacts(artifacts_dir: Path | str | None = None):
-    """Load artifacts into `app.state`.
+    """Compatibility shim: delegate artifact loading to `app.state.load_artifacts()`.
 
-    This function is intentionally idempotent and safe to call at startup or on reloads.
-    It prefers existing CSV filenames present in the `artifacts/` directory.
+    We keep this function to avoid breaking existing callers that import
+    `load_artifacts` from `app.loaders`. The canonical implementation now
+    lives in `app.state`.
     """
-    global ARTIFACTS_DIR
-    if artifacts_dir is not None:
-        ARTIFACTS_DIR = Path(artifacts_dir)
-
-    # Reorder recommendations
-    reorder_path = ARTIFACTS_DIR / "reorder_recommendations.csv"
-    state.reorder_df = _read_csv_safe(reorder_path)
-
-    # Forecasts
-    forecast_path = ARTIFACTS_DIR / "weekly_forecast_future.csv"
-    state.forecast_df = _read_csv_safe(forecast_path)
-
-    # COD intelligence: prefer `cod_recommendations.csv` but fall back to `cod_intelligence.csv`
-    cod_path = ARTIFACTS_DIR / "cod_recommendations.csv"
-    alt_cod_path = ARTIFACTS_DIR / "cod_intelligence.csv"
-    if cod_path.exists():
-        state.cod_df = _read_csv_safe(cod_path)
-    else:
-        state.cod_df = _read_csv_safe(alt_cod_path)
-
-    # Optional metadata
-    metadata_path = ARTIFACTS_DIR / "metadata.json"
-    if metadata_path.exists():
-        try:
-            with open(metadata_path, "r") as f:
-                state.metadata = json.load(f)
-        except Exception:
-            state.metadata = {}
-    else:
-        state.metadata = {}
-
-    # compute simple metadata
-    meta = {
-        "reorder_rows": len(state.reorder_df),
-        "cod_rows": len(state.cod_df),
-        "forecast_rows": len(state.forecast_df),
-    }
-    state.metadata = {**(state.metadata or {}), **meta}
-    return meta
+    return state.load_artifacts(artifacts_dir)
 
 
 def load_models(models_dir: Path | str | None = None):

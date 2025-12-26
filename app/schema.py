@@ -1,7 +1,8 @@
 from pydantic import BaseModel
 from typing import Optional, Literal
 
-
+# Schema definitions for various data models
+# Reorder Recommendation Schema
 class ReorderRecommendation(BaseModel):
     sku_id: str
     warehouse_id: str
@@ -11,11 +12,11 @@ class ReorderRecommendation(BaseModel):
     safety_stock: Optional[float]
     reorder_point: Optional[float]
     reorder_required: Optional[bool]
-    recommended_order_qty: Optional[int]
+    recommended_order_qty: Optional[float]
     sku_status: Optional[str]
     decision_reason: Optional[str]
 
-
+# COD Decision Schema
 class CODDecision(BaseModel):
     sku_id: str
     lane: Optional[str]
@@ -26,9 +27,7 @@ class CODDecision(BaseModel):
     notes: Optional[str]
 
 
+# Forecast Row Schema
 class ForecastRow(BaseModel):
     sku_id: str
-    # allow arbitrary additional fields; typical columns include week and p10/p50/p90
-    # clients should accept whatever CSV headers are present
-    # We keep a minimal required field and allow dynamic rows returned as dicts
     pass
