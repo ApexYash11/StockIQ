@@ -1,195 +1,321 @@
 import streamlit as st
 import requests
 import pandas as pd
+import altair as alt
+from datetime import datetime
 
-
-st.set_page_config(page_title="StockIQ", layout="wide")
-
-
-TABLE_HEIGHT = 520
-
+# --- CONFIGURATION ---
+st.set_page_config(
+    page_title="StockIQ | Warehouse Decision Hub",
+    page_icon="📦",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
 DEFAULT_API_BASE = "http://127.0.0.1:8000"
 
+# --- STYLE ---
+st.markdown("""
+    <style>
+    .main {
+        background-color: #f8f9fa;
+    }
+    .stMetric {
+        background-color: #ffffff;
+        padding: 15px;
+        border-radius: 10px;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+    }
+    div[data-testid="stExpander"] {
+        background-color: #ffffff;
+        border-radius: 10px;
+    }
+    </style>
+    """, unsafe_allow_html=True)
 
-def api_get(base: str, path: str, params: dict | None = None):
-    url = f"{base.rstrip('/')}/{path.lstrip('/')}"
-    r = requests.get(url, params=params, timeout=10)
-    r.raise_for_status()
-    return r.json()
+# --- API HELPERS ---
+def api_get(path: str, params: dict | None = None):
+    api_base = st.session_state.get("api_base", DEFAULT_API_BASE)
+    url = f"{api_base.rstrip('/')}/{path.lstrip('/')}"
+    try:
+        r = requests.get(url, params=params, timeout=10)
+        r.raise_for_status()
+        return r.json()
+    except Exception as e:
+        st.error(f"Backend Connection Error: {e}")
+        return None
 
-# Forecasts page
-def page_forecasts(api_base: str):
-    st.header("Forecasts")
+# --- DATA FETCHING ---
+@st.cache_data(ttl=60)
+def get_reorder_data(sku_id=None, warehouse_id=None):
+    params = {}
+    if sku_id: params["sku_id"] = sku_id
+    if warehouse_id: params["warehouse_id"] = warehouse_id
+    data = api_get("/reorder", params)
+    return pd.DataFrame(data) if data else pd.DataFrame()
 
-    sku_id = st.text_input("sku_id", placeholder="SKU0002")
-    start_week = st.text_input("start_week (YYYY-MM-DD)")
-    end_week = st.text_input("end_week (YYYY-MM-DD)")
-    limit = st.number_input("limit", min_value=1, value=50,)
+@st.cache_data(ttl=60)
+def get_forecast_data(sku_id, limit=52):
+    data = api_get("/forecast", {"sku_id": sku_id, "limit": limit})
+    return pd.DataFrame(data) if data else pd.DataFrame()
 
-    if st.button("Fetch forecasts"):
-        sku_id = str(sku_id).strip()
-        start_week = str(start_week).strip()
-        end_week = str(end_week).strip()
+@st.cache_data(ttl=60)
+def get_cod_data(sku_id=None, warehouse_id=None):
+    params = {}
+    if sku_id: params["sku_id"] = sku_id
+    if warehouse_id: params["warehouse_id"] = warehouse_id
+    data = api_get("/cod", params)
+    return pd.DataFrame(data) if data else pd.DataFrame()
 
-        if not sku_id and not start_week and not end_week:
-            st.warning("Enter at least one filter (sku_id or date range) before fetching.")
-            return
+# --- UI COMPONENTS ---
 
-        params = {}
-        if sku_id:
-            params["sku_id"] = sku_id
-        if start_week:
-            params["start_week"] = start_week
-        if end_week:
-            params["end_week"] = end_week
-        if limit:
-            params["limit"] = limit
+def render_overview():
+    st.title("🚀 Warehouse Overview")
+    st.subheader("What needs your attention today?")
 
-        try:
-            data = api_get(api_base, "/forecasts", params)
-            df = pd.DataFrame(data)
-            st.dataframe(df, width='stretch', height=TABLE_HEIGHT, hide_index=True)
+    reorder_df = get_reorder_data()
+    cod_df = get_cod_data()
 
-            if "week" in df.columns and "p50" in df.columns:
-                df["week"] = pd.to_datetime(df["week"])
-                chart_df = df.sort_values("week").set_index("week")
-                st.line_chart(chart_df[["p50"]])
+    if reorder_df.empty:
+        st.info("No reorder data available. Ensure backend is running and artifacts are loaded.")
+        return
 
-        except Exception as e:
-            st.error(str(e))
+    # KPIs
+    col1, col2, col3, col4 = st.columns(4)
+    
+    critical_count = len(reorder_df[reorder_df["sku_status"] == "REORDER"]) if "sku_status" in reorder_df.columns else 0
+    high_risk_cod = len(cod_df[cod_df["cod_risk_bucket"] == "HIGH"]) if not cod_df.empty and "cod_risk_bucket" in cod_df.columns else 0
+    down_trends = len(reorder_df[reorder_df["demand_trend"] == "DOWN"]) if "demand_trend" in reorder_df.columns else 0
+    
+    with col1:
+        st.metric("Critical Reorders", critical_count, delta=f"{critical_count} items", delta_color="inverse")
+    with col2:
+        st.metric("High COD Risk Lanes", high_risk_cod, delta_color="off")
+    with col3:
+        st.metric("Declining Demand", down_trends, help="SKUs with a DOWN demand trend")
+    with col4:
+        st.metric("Active Warehouses", reorder_df["warehouse_id"].nunique() if "warehouse_id" in reorder_df.columns else 0)
 
-# Reorder Recommendations page
-def page_reorders(api_base: str):
-    st.header("Reorder Recommendations")
+    st.divider()
 
-    sku_id = st.text_input("sku_id",placeholder="SKU0002")
-    warehouse_id = st.text_input("warehouse_id", placeholder="WH_east")
+    # Top Alerts
+    st.subheader("⚠️ Critical Action Items")
+    if critical_count > 0:
+        alerts = reorder_df[reorder_df["sku_status"] == "REORDER"].copy()
+        # Sort by how much we are below reorder point
+        if "reorder_point" in alerts.columns and "inventory_position" in alerts.columns:
+            alerts["shortfall"] = alerts["reorder_point"] - alerts["inventory_position"]
+            alerts = alerts.sort_values("shortfall", ascending=False).head(10)
+        
+        display_cols = [c for c in ["sku_id", "warehouse_id", "inventory_position", "reorder_point", "recommended_order_qty", "decision_reason"] if c in alerts.columns]
+        st.table(alerts[display_cols])
+    else:
+        st.success("All inventory levels are healthy!")
 
-    if st.button("Fetch reorders"):
-        sku_id = str(sku_id).strip()
-        warehouse_id = str(warehouse_id).strip()
-
-        if not sku_id and not warehouse_id:
-            st.warning("Enter sku_id and/or warehouse_id before fetching.")
-            return
-
-        params = {}
-        if sku_id:
-            params["sku_id"] = sku_id
-        if warehouse_id:
-            params["warehouse_id"] = warehouse_id
-
-        try:
-            data = api_get(api_base, "/reorder", params)
-            df = pd.DataFrame(data)
-            st.dataframe(df, width='stretch', height=TABLE_HEIGHT, hide_index=True)
-        except Exception as e:
-            st.error(str(e))
-
-# COD Decisions page
-def page_cod_decision(api_base: str):
-    st.header("COD Intelligence")
-
-    st.markdown("Use filters below and click **Apply filters**. Toggle views to focus on decisions or see full details.")
+def render_reorder_page():
+    st.title("📦 Reorder Decisions")
+    st.markdown("Authoritative SKU × Warehouse planning based on lead time and safety stock.")
 
     # Filters
-    cols = st.columns([1, 1, 1, 0.5])
-    with cols[0]:
-        sku_input = st.text_input("SKU(s)", placeholder="SKU0002 (comma-separated for multiple)")
-    with cols[1]:
-        wh_input = st.text_input("Warehouse", placeholder="WH_east")
-    with cols[2]:
-        policy_filter = st.selectbox("Policy action (optional)", options=["", "ALLOW", "LIMIT", "DISABLE"], index=0)
-    with cols[3]:
-        allow_all = st.checkbox("Allow fetch all", value=False, help="Check to allow fetching the full COD dataset (use with care)")
+    with st.expander("🔍 Filters", expanded=True):
+        f_col1, f_col2, f_col3 = st.columns(3)
+        with f_col1:
+            sku_filter = st.text_input("Filter by SKU ID")
+        with f_col2:
+            wh_filter = st.text_input("Filter by Warehouse")
+        with f_col3:
+            trend_filter = st.multiselect("Demand Trend", options=["UP", "DOWN", "STABLE"], default=[])
 
-    view_mode = st.radio("View", ["Decision view", "Details view"], index=0, horizontal=True)
+    df = get_reorder_data(sku_filter, wh_filter)
+    
+    if df.empty:
+        st.warning("No matching reorder records found.")
+        return
 
-    if st.button("Apply filters"):
-        # build params for API calls
-        params = {}
-        sku_input = (sku_input or "").strip()
-        wh_input = (wh_input or "").strip()
-        policy_filter = (policy_filter or "").strip()
+    if trend_filter and "demand_trend" in df.columns:
+        df = df[df["demand_trend"].isin(trend_filter)]
 
-        if not sku_input and not wh_input and not policy_filter and not allow_all:
-            st.warning("Please supply at least one filter or enable 'Allow fetch all' to retrieve all rows.")
-            st.stop()
+    # Main Table
+    st.subheader("Decision Matrix")
+    
+    # Color coding for status
+    def color_status(val):
+        color = '#ff4b4b' if val == 'REORDER' else '#28a745'
+        return f'background-color: {color}; color: white; font-weight: bold; border-radius: 4px; padding: 2px 5px;'
 
-        # support multiple SKUs via comma-splitting client-side
-        skus = [s.strip() for s in sku_input.split(",") if s.strip()] if sku_input else [None]
+    def color_trend(val):
+        if val == 'UP': color = '#28a745'
+        elif val == 'DOWN': color = '#ff4b4b'
+        else: color = '#6c757d'
+        return f'color: {color}; font-weight: bold;'
 
-        all_rows = []
-        try:
-            # If user supplied multiple SKUs, call /cod per SKU to limit payload
-            if skus and any(skus):
-                for s in skus:
-                    p = {"sku_id": s} if s else {}
-                    if wh_input:
-                        p["warehouse_id"] = wh_input
-                    rows = api_get(api_base, "/cod", p)
-                    all_rows.extend(rows)
-            else:
-                p = {}
-                if wh_input:
-                    p["warehouse_id"] = wh_input
-                rows = api_get(api_base, "/cod", p)
-                all_rows.extend(rows)
+    styled_df = df.style
+    if "sku_status" in df.columns:
+        styled_df = styled_df.map(color_status, subset=['sku_status'])
+    if "demand_trend" in df.columns:
+        styled_df = styled_df.map(color_trend, subset=['demand_trend'])
 
-            # client-side policy filter if requested (exact match)
-            if policy_filter:
-                all_rows = [r for r in all_rows if r.get("cod_policy_action") == policy_filter]
-
-            if not all_rows:
-                st.info("No COD rows matched the filters.")
-                st.stop()
-
-            df = pd.DataFrame(all_rows)
-
-            # Decision view: minimal columns
-            if view_mode == "Decision view":
-                show_cols = [c for c in ["sku_id", "warehouse_id", "cod_policy_action", "cod_risk_bucket"] if c in df.columns]
-                st.dataframe(df[show_cols], use_container_width=True, height=TABLE_HEIGHT, hide_index=True)
-                st.caption(f"Rows returned: {len(df)}")
-
-            # Details view: show numeric fields and metadata
-            else:
-                # preferred order, only present if in df
-                cols_order = ["sku_id", "warehouse_id", "cod_policy_action", "cod_risk_bucket", "cod_share", "cod_rto_rate", "cod_success_rate", "financial_risk_flag", "description"]
-                show_cols = [c for c in cols_order if c in df.columns]
-                st.dataframe(df[show_cols], use_container_width=True, height=TABLE_HEIGHT, hide_index=True)
-                st.caption(f"Rows returned: {len(df)}")
-
-            # allow per-row inspection
-            with st.expander("Inspect rows (JSON)"):
-                for i, row in enumerate(all_rows[:500]):
-                    st.write(row)
-
-        except Exception as e:
-            st.error(str(e))
-
-
-# Main app
-def main_page():
-    st.title("StockIQ — Decision Dashboard")
-
-    st.sidebar.header("Backend")
-    api_base = st.sidebar.text_input("FastAPI base URL", DEFAULT_API_BASE)
-
-    page = st.sidebar.radio(
-        "Page",
-        ["Forecasts", "Reorders", "COD Decision"],
+    st.dataframe(
+        styled_df,
+        use_container_width=True,
+        height=400,
+        hide_index=True
     )
 
-    if page == "Forecasts":
-        page_forecasts(api_base)
-    elif page == "Reorders":
-        page_reorders(api_base)
-    elif page == "COD Decision":
-        page_cod_decision(api_base)
+    st.divider()
 
+    # Deep Dive
+    st.subheader("🔬 Inventory Deep Dive")
+    if "sku_id" in df.columns:
+        selected_sku = st.selectbox("Select SKU for visual analysis", options=df["sku_id"].unique())
+        
+        sku_data = df[df["sku_id"] == selected_sku].iloc[0]
+        
+        d_col1, d_col2 = st.columns([1, 2])
+        
+        with d_col1:
+            st.write(f"**SKU:** {selected_sku}")
+            st.write(f"**Warehouse:** {sku_data.get('warehouse_id', 'N/A')}")
+            st.write(f"**Status:** {sku_data.get('sku_status', 'N/A')}")
+            st.info(f"**Reason:** {sku_data.get('decision_reason', 'N/A')}")
+            
+            st.markdown(f"""
+            - **Safety Stock:** {sku_data.get('safety_stock', 0):.2f} 
+              *(Buffer for demand spikes)*
+            - **Reorder Point:** {sku_data.get('reorder_point', 0):.2f} 
+              *(Trigger point: Lead Time Demand + Safety Stock)*
+            - **Lead Time:** {sku_data.get('lead_time_weeks', 'N/A')} weeks
+            """)
+
+        with d_col2:
+            # Inventory Level Chart
+            chart_data = pd.DataFrame({
+                'Metric': ['On Hand', 'Reorder Point', 'Safety Stock'],
+                'Value': [sku_data.get('inventory_position', 0), sku_data.get('reorder_point', 0), sku_data.get('safety_stock', 0)]
+            })
+            
+            bar_chart = alt.Chart(chart_data).mark_bar().encode(
+                x=alt.X('Metric', sort=None),
+                y='Value',
+                color=alt.Color('Metric', scale=alt.Scale(range=['#007bff', '#ffc107', '#6c757d']))
+            ).properties(height=300)
+            
+            st.altair_chart(bar_chart, use_container_width=True)
+
+def render_forecast_page():
+    st.title("📈 Forecast Insights")
+    st.markdown("Probabilistic demand projections (P10/P50/P90) to understand future risk.")
+
+    sku_id = st.text_input("Enter SKU ID to view forecast", value="SKU0001")
+    
+    if sku_id:
+        df = get_forecast_data(sku_id)
+        
+        if df.empty:
+            st.warning(f"No forecast data found for {sku_id}")
+            return
+
+        if "week" in df.columns:
+            df["week"] = pd.to_datetime(df["week"])
+            
+            # Altair Chart with Band
+            base = alt.Chart(df).encode(x='week:T')
+
+            line = base.mark_line(color='#007bff', strokeWidth=3).encode(
+                y=alt.Y('p50:Q', title='Demand Units'),
+                tooltip=['week', 'p10', 'p50', 'p90']
+            )
+
+            band = base.mark_area(opacity=0.2, color='#007bff').encode(
+                y='p10:Q',
+                y2='p90:Q'
+            )
+
+            st.altair_chart((band + line).properties(height=400), use_container_width=True)
+            
+            st.caption("💡 **P50 (Line):** Most likely outcome. **P10-P90 (Shaded):** 80% confidence interval. Wider bands mean higher uncertainty.")
+            
+            with st.expander("View Raw Forecast Data"):
+                st.dataframe(df, use_container_width=True)
+
+def render_cod_page():
+    st.title("🛡️ COD Risk & Policy")
+    st.markdown("Manage Cash-on-Delivery risk and enforce automated policy actions.")
+
+    df = get_cod_data()
+    
+    if df.empty:
+        st.warning("No COD data available.")
+        return
+
+    # Risk Distribution
+    if "cod_risk_bucket" in df.columns:
+        st.subheader("Risk Profile")
+        risk_counts = df["cod_risk_bucket"].value_counts().reset_index()
+        risk_counts.columns = ["Risk Bucket", "Count"]
+        
+        risk_chart = alt.Chart(risk_counts).mark_arc(innerRadius=50).encode(
+            theta=alt.Theta(field="Count", type="quantitative"),
+            color=alt.Color(field="Risk Bucket", type="nominal", scale=alt.Scale(domain=['LOW', 'MEDIUM', 'HIGH'], range=['#28a745', '#ffc107', '#ff4b4b'])),
+            tooltip=["Risk Bucket", "Count"]
+        ).properties(height=300)
+        
+        st.altair_chart(risk_chart, use_container_width=True)
+
+    st.divider()
+
+    # Policy Table
+    st.subheader("Policy Enforcement")
+    
+    def color_risk(val):
+        if val == 'HIGH': return 'background-color: #ff4b4b; color: white;'
+        if val == 'MEDIUM': return 'background-color: #ffc107;'
+        return 'background-color: #28a745; color: white;'
+
+    def color_flag(val):
+        return 'color: #ff4b4b; font-weight: bold;' if val is True else ''
+
+    display_cols = [c for c in ["sku_id", "warehouse_id", "cod_risk_bucket", "cod_policy_action", "cod_share", "financial_risk_flag"] if c in df.columns]
+    
+    styled_df = df[display_cols].style
+    if "cod_risk_bucket" in df.columns:
+        styled_df = styled_df.map(color_risk, subset=['cod_risk_bucket'])
+    if "financial_risk_flag" in df.columns:
+        styled_df = styled_df.map(color_flag, subset=['financial_risk_flag'])
+
+    st.dataframe(
+        styled_df,
+        use_container_width=True,
+        height=500,
+        hide_index=True
+    )
+
+# --- MAIN APP ---
+def main():
+    st.sidebar.title("StockIQ 📦")
+    st.sidebar.markdown("---")
+    
+    # Sidebar Config
+    api_base = st.sidebar.text_input("FastAPI Base URL", DEFAULT_API_BASE)
+    st.session_state["api_base"] = api_base
+    
+    page = st.sidebar.radio(
+        "Navigation",
+        ["Overview", "Reorder Decisions", "Forecast Insights", "COD Risk"]
+    )
+    
+    st.sidebar.markdown("---")
+    st.sidebar.caption(f"Last Sync: {datetime.now().strftime('%H:%M:%S')}")
+    
+    if page == "Overview":
+        render_overview()
+    elif page == "Reorder Decisions":
+        render_reorder_page()
+    elif page == "Forecast Insights":
+        render_forecast_page()
+    elif page == "COD Risk":
+        render_cod_page()
 
 if __name__ == "__main__":
-    main_page()
+    main()
 
