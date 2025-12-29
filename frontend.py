@@ -23,12 +23,26 @@ st.markdown("""
     .stMetric {
         background-color: #ffffff;
         padding: 15px;
-        border-radius: 10px;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        border-radius: 8px;
+        border: 1px solid #e9ecef;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+        color: #31333F !important;
+    }
+    .stMetric label {
+        color: #6c757d !important;
+    }
+    .stMetric [data-testid="stMetricValue"] {
+        color: #212529 !important;
     }
     div[data-testid="stExpander"] {
         background-color: #ffffff;
-        border-radius: 10px;
+        border-radius: 8px;
+        border: 1px solid #e9ecef;
+        box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+        color: #31333F !important;
+    }
+    div[data-testid="stExpander"] p {
+        color: #31333F !important;
     }
     </style>
     """, unsafe_allow_html=True)
@@ -70,7 +84,7 @@ def get_cod_data(sku_id=None, warehouse_id=None):
 # --- UI COMPONENTS ---
 
 def render_overview():
-    st.title("🚀 Warehouse Overview")
+    st.title("Warehouse Overview")
     st.subheader("What needs your attention today?")
 
     reorder_df = get_reorder_data()
@@ -99,7 +113,7 @@ def render_overview():
     st.divider()
 
     # Top Alerts
-    st.subheader("⚠️ Critical Action Items")
+    st.subheader("Critical Action Items")
     if critical_count > 0:
         alerts = reorder_df[reorder_df["sku_status"] == "REORDER"].copy()
         # Sort by how much we are below reorder point
@@ -113,11 +127,11 @@ def render_overview():
         st.success("All inventory levels are healthy!")
 
 def render_reorder_page():
-    st.title("📦 Reorder Decisions")
+    st.title("Reorder Decisions")
     st.markdown("Authoritative SKU × Warehouse planning based on lead time and safety stock.")
 
     # Filters
-    with st.expander("🔍 Filters", expanded=True):
+    with st.expander("Filters", expanded=True):
         f_col1, f_col2, f_col3 = st.columns(3)
         with f_col1:
             sku_filter = st.text_input("Filter by SKU ID")
@@ -165,7 +179,7 @@ def render_reorder_page():
     st.divider()
 
     # Deep Dive
-    st.subheader("🔬 Inventory Deep Dive")
+    st.subheader("Inventory Deep Dive")
     if "sku_id" in df.columns:
         selected_sku = st.selectbox("Select SKU for visual analysis", options=df["sku_id"].unique())
         
@@ -203,7 +217,7 @@ def render_reorder_page():
             st.altair_chart(bar_chart, use_container_width=True)
 
 def render_forecast_page():
-    st.title("📈 Forecast Insights")
+    st.title("Forecast Insights")
     st.markdown("Probabilistic demand projections (P10/P50/P90) to understand future risk.")
 
     sku_id = st.text_input("Enter SKU ID to view forecast", value="SKU0001")
@@ -233,13 +247,13 @@ def render_forecast_page():
 
             st.altair_chart((band + line).properties(height=400), use_container_width=True)
             
-            st.caption("💡 **P50 (Line):** Most likely outcome. **P10-P90 (Shaded):** 80% confidence interval. Wider bands mean higher uncertainty.")
+            st.caption("**P50 (Line):** Most likely outcome. **P10-P90 (Shaded):** 80% confidence interval. Wider bands mean higher uncertainty.")
             
             with st.expander("View Raw Forecast Data"):
                 st.dataframe(df, use_container_width=True)
 
 def render_cod_page():
-    st.title("🛡️ COD Risk & Policy")
+    st.title("COD Risk & Policy")
     st.markdown("Manage Cash-on-Delivery risk and enforce automated policy actions.")
 
     df = get_cod_data()
@@ -292,7 +306,7 @@ def render_cod_page():
 
 # --- MAIN APP ---
 def main():
-    st.sidebar.title("StockIQ 📦")
+    st.sidebar.title("StockIQ")
     st.sidebar.markdown("---")
     
     # Sidebar Config
