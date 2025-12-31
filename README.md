@@ -23,17 +23,32 @@ The repo includes:
 - Generated artifacts in `artifacts/` used for debugging and monitoring
 
 ## System Architecture
+%%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#ffedce', 'edgeLabelBackground':'#ffffff', 'tertiaryColor': '#f4f4f4'}}}%%
+graph TD
+    Client[Client<br/>CLI · Notebook · Future API]
+    DB[(Metadata & State Store)]
+    Queue[Offline / Batch Execution Engine]
+    Artifacts[Decision Artifacts Store<br/>(CSV / JSON)]
 
-```mermaid
-flowchart LR
-    A[Orders / Inventory / Vendors / Campaigns] --> B[Weekly Aggregation]
-    B --> C[SKU Routing]
-    C --> D[Demand Forecasting<br/>(P10 / P50 / P90 via SARIMAX)]
-    D --> E[Warehouse Allocation]
-    E --> F[Reorder Engine]
-    F --> G[COD Intelligence]
-    G --> H[Final Recommendations]
-```
+    subgraph "StockIQ Orchestration Layer"
+        Router[Execution Entry Point]
+        Schema[Input Validation & Hygiene]
+        Manager[Pipeline Manager<br/>(Run Controller)]
+        Monitor[Progress / Logs]
+    end
+
+    Client -->|Run pipeline / query| Router
+    Router --> Schema
+    Schema --> Manager
+
+    Manager -->|Persist run metadata| DB
+    Manager -->|Schedule batch run| Queue
+
+    Queue -->|Execute forecasting & decisions| Monitor
+    Monitor -.->|Progress / metrics| Client
+
+    Queue -->|Write outputs| Artifacts
+    Queue -->|Final run status| DB
 
 ## Core Components
 
