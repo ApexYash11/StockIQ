@@ -23,32 +23,48 @@ The repo includes:
 - Generated artifacts in `artifacts/` used for debugging and monitoring
 
 ## System Architecture
-%%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#ffedce', 'edgeLabelBackground':'#ffffff', 'tertiaryColor': '#f4f4f4'}}}%%
-graph TD
-    Client[Client<br/>CLI · Notebook · Future API]
-    DB[(Metadata & State Store)]
-    Queue[Offline / Batch Execution Engine]
-    Artifacts[Decision Artifacts Store<br/>(CSV / JSON)]
 
-    subgraph "StockIQ Orchestration Layer"
+```mermaid
+graph TD
+    %% Node Definitions
+    Client([<b>User Interface</b><br/>CLI • Notebook • Streamlit])
+    
+    subgraph Orchestration ["<b>StockIQ Orchestration Layer</b>"]
+        direction TB
         Router[Execution Entry Point]
         Schema[Input Validation & Hygiene]
-        Manager[Pipeline Manager<br/>(Run Controller)]
-        Monitor[Progress / Logs]
+        Manager[Pipeline Manager]
+        Monitor[Progress & Metrics]
     end
 
-    Client -->|Run pipeline / query| Router
+    subgraph Intelligence ["<b>Decision Intelligence Engine</b>"]
+        direction LR
+        Forecast[<b>Demand Forecasting</b><br/>SARIMAX P10/P50/P90]
+        Reorder[<b>Reorder Logic</b><br/>Lead Time • MOQ • SS]
+        COD[<b>COD Intelligence</b><br/>RTO Risk • Policy]
+    end
+
+    subgraph Storage ["<b>Data & Artifact Store</b>"]
+        DB[(Metadata & State)]
+        Artifacts[Decision Artifacts<br/>CSV / JSON]
+    end
+
+    %% Connections
+    Client -->|Run Pipeline| Router
     Router --> Schema
     Schema --> Manager
+    
+    Manager --> Intelligence
+    Intelligence -->|Write Outputs| Artifacts
+    Manager -.->|Persist Metadata| DB
+    Intelligence -.->|Logs| Monitor
+    Monitor -.->|Feedback| Client
 
-    Manager -->|Persist run metadata| DB
-    Manager -->|Schedule batch run| Queue
-
-    Queue -->|Execute forecasting & decisions| Monitor
-    Monitor -.->|Progress / metrics| Client
-
-    Queue -->|Write outputs| Artifacts
-    Queue -->|Final run status| DB
+    %% Styling
+    style Orchestration fill:#f9f9f9,stroke:#333,stroke-width:2px
+    style Intelligence fill:#e1f5fe,stroke:#01579b,stroke-width:2px
+    style Storage fill:#fff3e0,stroke:#e65100,stroke-width:2
+```
 
 ## Core Components
 
